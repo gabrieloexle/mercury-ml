@@ -9,8 +9,8 @@
 import sys
 import os
 sys.path.append(os.path.split(os.path.split(os.getcwd())[0])[0])
-config_filepath = os.path.join(os.getcwd(),"config/fit_config_mnist.json")
-notebook_filepath = os.path.join(os.getcwd(),"fit_mnist.ipynb")
+#config_filepath = os.path.join(os.getcwd(),"config/fit_config_mnist.json")
+#notebook_filepath = os.path.join(os.getcwd(),"fit_mnist.ipynb")jupytext
 import uuid
 import json
 import datetime
@@ -32,61 +32,9 @@ session_id = str(uuid.uuid4().hex)
 
 # In[ ]:
 
-
-config = utils.load_referenced_json_config(config_filepath)
-
+data_bunch_name= "images_456"
 
 # In[ ]:
-
-
-utils.recursively_update_config(config["meta_info"], {
-    "session_id": session_id,
-    "model_purpose": config["meta_info"]["model_purpose"],
-    "config_filepath": config_filepath,
-    "notebook_filepath": notebook_filepath
-})
-
-
-# In[ ]:
-
-
-utils.recursively_update_config(config, config["meta_info"])
-
-
-# ### Helper functions
-# `get_and_log`, or basically `getattr`, is used to read out function names from the config file.
-# This is necesarry because different functions are used in different context. E.g. there are different functions for Keras than for H2O. Or for reading images instead of reading arrays from .csv.
-
-# In[ ]:
-
-
-def create_and_log(container, class_name, params):
-    provider = getattr(container, class_name)(**params)
-    print("{}.{}".format(container.__name__, class_name))
-    print("params: ", json.dumps(params, indent=2))
-    return provider
-
-def get_and_log(container, function_name):
-    provider = getattr(container, function_name)
-    print("{}.{}".format(container.__name__, function_name))
-    return provider
-def maybe_transform(data_bunch, pre_execution_parameters):
-    if pre_execution_parameters:
-        return data_bunch.transform(**pre_execution_parameters)
-    else:
-        return data_bunch
-
-
-# ### Download and convert MNIST Images
-# If the images for training do not exist, download them and save them as .png images
-
-# In[ ]:
-
-
-if not os.path.exists(config["exec"]["read_source_data"]["params"]["train_params"]["iterator_params"]["directory"]):
-    from load_mnist import download_and_convert_mnist 
-    download_and_convert_mnist(config["meta_info"]["data_bunch_name"])
-
 
 # ## Source
 # First read out from the config file which file input
@@ -95,21 +43,56 @@ if not os.path.exists(config["exec"]["read_source_data"]["params"]["train_params
 # In[ ]:
 
 
-read_source_data_set = get_and_log(common_containers.SourceReaders, config["init"]["read_source_data"]["name"])
+read_source_train_param = {
+          "generator_params": {
+            "channel_shift_range": 0.0,
+            "data_format": "channels_last",
+            "featurewise_center": False,
+            "featurewise_std_normalization": False,
+            "fill_mode": "nearest",
+            "height_shift_range": 0.1,
+            "horizontal_flip": True,
+            "rescale": 0.00392156862745098,
+            "rotation_range": 0.2,
+            "samplewise_center": True,
+            "samplewise_std_normalization": True,
+            "shear_range": 0.1,
+            "vertical_flip": True,
+            "width_shift_range": 0.1,
+            "zca_epsilon": 1e-6,
+            "zca_whitening": False,
+            "zoom_range": 0.1
+          },
+          "iterator_params": {
+            "directory": "./example_data/"+data_bunch_name+"/train",
+            "batch_size": 2,
+            "class_mode": "categorical",
+            "color_mode": "rgb",
+            "seed": 12345,
+            "shuffle": True,
+            "target_size": [
+              10,
+              10
+            ]
+          }
+        }
 
+read_source_data_parm_valid = read_source_train_param
+read_source_dara_parm_test =  read_source_train_param
+read_source_data_parm_valid["iterator_params"]["shuffle"]= False
+read_source_dara_parm_test["iterator_params"]["shuffle"]= False
 
-# In[ ]:
-
-
-data_bunch_source = tasks.read_train_valid_test_data_bunch(read_source_data_set,**config["exec"]["read_source_data"]["params"] )
+read_source_data_set = common_containers.SourceReaders.read_disk_keras_single_input_iterator
+data_bunch_fit = tasks.read_train_valid_test_data_bunch(read_source_data_set,
+                                                        read_source_train_param,
+                                                        read_source_data_parm_valid,
+                                                        read_source_dara_parm_test)
 
 
 # If there are parameters speifed for pre_execution_transformation, the data has to be transformed
 
 # In[ ]:
 
-
-data_bunch_fit = maybe_transform(data_bunch_source, config["exec"]["fit"].get("pre_execution_transformation"))
 
 
 # ## Model
@@ -118,45 +101,31 @@ data_bunch_fit = maybe_transform(data_bunch_source, config["exec"]["fit"].get("p
 
 # In[ ]:
 
+optimizer_parm = {
+        "optimizer_name": "adam",
+        "optimizer_params": {
+          "lr": 0.001
+        }
+      }
 
-get_optimizer = get_and_log(keras_containers.OptimizerFetchers, 
-                           config["init"]["get_optimizer"]["name"])
-get_loss_function = get_and_log(keras_containers.LossFunctionFetchers, 
-                                config["init"]["get_loss_function"]["name"])
-compile_model = get_and_log(keras_containers.ModelCompilers, 
-                            config["init"]["compile_model"]["name"])
-fit = get_and_log(keras_containers.ModelFitters, config["init"]["fit"]["name"])
-
+optimizer =keras_containers.OptimizerFetchers.get_keras_optimizer(**optimizer_parm)
+loss_function = keras_containers.LossFunctionFetchers.get_keras_loss("categorical_crossentropy")
 
 # Specify the keras model
 
 # In[ ]:
 
 
-if(config["exec"]["read_source_data"]["params"]["train_params"]["iterator_params"]["color_mode"]=="grayscale"):
-    color_size = 1
-elif(config["exec"]["read_source_data"]["params"]["train_params"]["iterator_params"]["color_mode"]=="RGBA"):
-    color_size = 4
-else: #color_mode is RGB
-    color_size = 3
-input_shape = (config["exec"]["define_model"]["params"]["input_size"][0],config["exec"]["define_model"]["params"]["input_size"][1],color_size)
+model = keras_containers.ModelDefinitions.define_conv_simple(
+    input_size = [10, 10],
+    nb_classes=2,
+    final_activation="softmax",
+    dropout_rate=0.1)
 
-from keras.models import Sequential
-from keras.layers import Dense, Conv2D, Dropout, Flatten, MaxPooling2D
-import tensorflow as tf
-
-model = Sequential()
-model.add(Conv2D(28, kernel_size=(3,3), input_shape=input_shape))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Flatten()) # converting 2D array into fully connected layers
-model.add(Dense(128, activation=tf.nn.relu))
-model.add(Dropout(rate=config["exec"]["define_model"]["params"]["dropout_rate"], seed=12345))
-model.add(Dense(config["exec"]["define_model"]["params"]["nb_classes"],activation=tf.nn.softmax))
-
-model = compile_model(model=model,
-                      optimizer=get_optimizer(**config["exec"]["get_optimizer"]["params"]),
-                      loss=get_loss_function(**config["exec"]["get_loss_function"]["params"]),
-                      **config["exec"]["compile_model"]["params"])
+model = keras_containers.ModelCompilers.compile_model(model=model,
+                      optimizer=optimizer,
+                      loss=loss_function,
+                      metrics=["acc"])
 
 
 # ### Fit the model
@@ -165,19 +134,25 @@ model = compile_model(model=model,
 
 # In[ ]:
 
-
-callbacks = []
-for callback in config["init"]["callbacks"]:
-    callbacks = callbacks + [get_and_log(keras_containers.CallBacks, callback["name"])(callback["params"])]
+callback_params_early_st = {
+          "patience": 2,
+          "monitor": "val_loss",
+          "min_delta": 0.001
+        }
+callback_params_early_model_ch = {
+    "filepath": "./example_results/local/"+session_id+"/model_checkpoint/last_best_model.h5",
+    "save_best_only": True
+}
+callbacks = [keras_containers.CallBacks.early_stopping(callback_params_early_st),
+             keras_containers.CallBacks.model_checkpoint(callback_params_early_model_ch)]
 
 
 # In[ ]:
 
-
-model = fit(model = model,
+model = keras_containers.ModelFitters.fit_generator(model = model,
             data_bunch = data_bunch_fit,
             callbacks = callbacks,
-            **config["exec"]["fit"]["params"])
+            epochs=5)
 
 
 # #### Save the model
@@ -185,61 +160,88 @@ model = fit(model = model,
 # In[ ]:
 
 
-save_model_dict = {
-    save_model_function_name: get_and_log(keras_containers.ModelSavers, save_model_function_name) for save_model_function_name in config["init"]["save_model"]["names"]
-}
+
+save_model_dict = {"save_hdf5":keras_containers.ModelSavers.save_hdf5,
+"save_tensorflow_serving_predict_signature_def":keras_containers.ModelSavers.save_tensorflow_serving_predict_signature_def}
+
+model_local_dir ="./example_results/local/"+session_id+"/models"
+model_remote_dir = "./example_results/remote/"+session_id+"/models"
+model_object_name= "fit_example__"+session_id
+save_model_parm = {
+      "save_hdf5": {
+        "local_dir": model_local_dir,
+        "remote_dir": model_remote_dir,
+        "filename": model_object_name+"__hdf5",
+        "extension": ".h5",
+        "overwrite_remote": True
+      },
+      "save_tensorflow_serving_predict_signature_def": {
+        "local_dir": model_local_dir,
+        "remote_dir": model_remote_dir,
+        "filename": model_object_name+"__tf_serving_predict",
+        "temp_base_dir": "c:/tf_serving/_tmp_model/"+model_object_name+"__tf_serving_predict",
+        "extension": ".zip",
+        "overwrite_remote": True,
+        "do_save_labels_txt": True,
+        "input_name": "input",
+        "output_name": "output",
+        "labels_list": ["cat","dog"]
+      }
+    }
+
 for model_format, save_model in save_model_dict.items():
     
     tasks.store_model(save_model=save_model,
                       model=model,
-                      copy_from_local_to_remote = get_and_log(common_containers.ArtifactCopiers, config["init"]["copy_from_local_to_remote"]["name"]),
-                      **config["exec"]["save_model"][model_format]
+                      copy_from_local_to_remote = common_containers.ArtifactCopiers.copy_from_disk_to_disk,#get_and_log(common_containers.ArtifactCopiers, config["init"]["copy_from_local_to_remote"]["name"]),
+                      **save_model_parm[model_format]
                       )
-
 
 # #### Evaluate model
 
 # In[ ]:
 
 
-evaluate = get_and_log(keras_containers.ModelEvaluators, config["init"]["evaluate"]["name"])
-predict = get_and_log(keras_containers.PredictionFunctions, config["init"]["predict"]["name"])
-custom_label_metrics_dict = {
-    custom_label_metric_name: get_and_log(common_containers.CustomLabelMetrics, custom_label_metric_name) for custom_label_metric_name in config["init"]["custom_label_metrics"]["names"]
-}
+evaluate = keras_containers.ModelEvaluators.evaluate_generator
+predict = keras_containers.PredictionFunctions.predict_generator
+
+custom_label_metrics_dict = {"evaluate_numpy_accuracy":common_containers.CustomLabelMetrics.evaluate_numpy_accuracy,
+        "evaluate_numpy_confusion_matrix":common_containers.CustomLabelMetrics.evaluate_numpy_confusion_matrix}
+
 
 
 # In[ ]:
 
 
-data_bunch_metrics = maybe_transform(data_bunch_fit, config["exec"]["evaluate"].get("pre_execution_transformation"))
-data_bunch_predict = maybe_transform(data_bunch_metrics, config["exec"]["predict"].get("pre_execution_transformation"))
-
-for data_set_name in config["exec"]["predict"]["data_set_names"]:
-    data_set = getattr(data_bunch_predict, data_set_name)
-    data_set.predictions = predict(model=model, data_set=data_set, **config["exec"]["predict"]["params"])
+data_bunch_fit.test.predictions = predict(model=model, data_set=data_bunch_fit.test)
 
 
 # In[ ]:
 
 
-data_bunch_metrics = maybe_transform(data_bunch_fit, config["exec"]["evaluate"].get("pre_execution_transformation"))
-metrics = {}
-for data_set_name in config["exec"]["evaluate"]["data_set_names"]:
-    data_set = getattr(data_bunch_metrics, data_set_name)
-    metrics[data_set_name] = evaluate(model, data_set, **config["exec"]["evaluate"]["params"])
-print(json.dumps(metrics, indent=2))
+#metrics = {}
 
 
+#metrics["test"] = evaluate(model, data_bunch_fit.test)
+result = evaluate(model, data_bunch_fit.test)
+print(json.dumps(result, indent=2))
 # In[ ]:
 
 
 
-data_bunch_custom_metrics = maybe_transform(data_bunch_predict, 
-                                            config["exec"]["evaluate_custom_metrics"].get("pre_execution_transformation"))
-custom_label_metrics = {}
-for data_set_name in config["exec"]["evaluate_custom_label_metrics"]["data_set_names"]:
-    data_set = getattr(data_bunch_custom_metrics, data_set_name)
-    custom_label_metrics[data_set_name] = tasks.evaluate_label_metrics(data_set, custom_label_metrics_dict)
-print(json.dumps(custom_label_metrics, indent=2))
 
+
+transformation_param = {
+        "data_set_names": ["test"],
+        "params": {
+          "transform_to": "numpy",
+          "data_wrapper_params": {
+            "predictions": {},
+            "index": {},
+            "targets": {}
+          }
+        }
+      }
+data_bunch_metric = data_bunch_fit.transform(**transformation_param)
+confMat = tasks.evaluate_label_metrics(data_bunch_metric.test, custom_label_metrics_dict)
+print(json.dumps(confMat, indent=2))
